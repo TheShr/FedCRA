@@ -1,0 +1,8 @@
+name: FedOpt
+params:
+  # FedOpt is a generalization; same-style params as FedAdam/FedYogi
+  eta: 1.0
+  eta_l: 0.001
+  beta_1: 0.9
+  beta_2: 0.99
+  tau: 1e-9

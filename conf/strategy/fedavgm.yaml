@@ -1,0 +1,3 @@
+name: FedAvgM
+params:
+  server_momentum: 0.9   # typical starting value

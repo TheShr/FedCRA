@@ -1,0 +1,6 @@
+name: FedAdagrad
+params:
+  # Server optimizer hyperparams (optional, these are sensible defaults)
+  eta: 1.0        # server LR
+  eta_l: 0.001    # client LR scaling (match your client LR)
+  tau: 1e-9       # stability term

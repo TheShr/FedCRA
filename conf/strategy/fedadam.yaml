@@ -1,0 +1,7 @@
+name: FedAdam
+params:
+  eta: 1.0          # server learning rate (try 0.1–1.0)
+  eta_l: 0.001      # scales client LR, usually matches your client optimizer LR
+  beta_1: 0.9       # momentum for first moment
+  beta_2: 0.99      # momentum for second moment
+  tau: 1e-9         # stability term, leave default

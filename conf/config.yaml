@@ -1,0 +1,49 @@
+defaults:
+  - _self_
+  - model: dnn.yaml
+  - strategy: fedavg.yaml
+  - config_fit: lstm_config_fit.yaml
+
+PROJECT_PATH: 'C:/Users/anujs/OneDrive/Desktop/dataset-1'
+
+hydra:
+  run:
+    dir: '${PROJECT_PATH}/models/hydra/static_string'
+
+dataset:
+  dataset_name: 'iomt_traffic'
+  data_file_name: 'iomt_traffic_ip_flow.csv.bz2'
+  label_name: 'Category'
+  n_features: 30
+
+data_config:
+  folder_name: '${PROJECT_PATH}/data/${dataset.dataset_name}'
+  file_name: '${dataset.data_file_name}'
+  label_name: ${dataset.label_name}
+  sample_size: 8000
+  n_features: ${dataset.n_features}
+  label_encoding_type: 'label_encoding'
+  alpha: 0.1
+
+strategy_name: 'FedAvg'
+
+fed_config:
+  clients: ['client1', 'client2', 'client3', 'client4', 'client5', 'client6', 'client7', 'client8']
+  server_address: "127.0.0.1:8085"
+  client_name: ''
+  num_rounds: 70
+  num_clients: 8
+  fed_strategy: ${strategy_name}
+  num_clients_per_round_fit: ${fed_config.num_clients}
+  num_clients_per_round_eval: 8
+  fraction_fit: 1
+  fraction_eval: 1
+  num_cpus: 4
+  num_gpus: 0
+  train_batch_size: 128
+  num_client_local_rounds: 5
+  epochs: 5
+  learning_rate: 0.001
+  model_results_path: '${PROJECT_PATH}/models/${dataset.dataset_name}/${dataset.label_name}'
+
+seed: 42

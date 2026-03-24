@@ -1,0 +1,10 @@
+name: FedCRA
+params:
+  alpha_cra_peak: 0.4
+  alpha_cra_min: 0.05
+  alpha_ramp_rounds: 10
+  lambda_severity: 4.0
+  embedding_dim: 128
+  num_classes: 9
+  anchor_momentum: 0.9
+  grad_clip: 1.0
