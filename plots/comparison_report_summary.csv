@@ -1,3 +1,0 @@
-Strategy,accuracy_final,accuracy_best,accuracy_best_round,f1_score_final,f1_score_best,f1_score_best_round,precision_final,precision_best,precision_best_round,recall_final,recall_best,recall_best_round,macro_fpr_final,macro_fpr_best,macro_fpr_best_round,loss_final,loss_best,loss_best_round
-FedAvg,0.76505,0.9306,35,0.44923,0.64592,42,0.43795,0.68376,35,0.52668,0.64713,56,0.02834,0.0092,35,0.00154,0.00134,49
-FedCRA,0.88963,0.94231,67,0.60423,0.65554,67,0.62064,0.65361,67,0.61187,0.66028,67,0.01419,0.00759,67,0.0012,0.0012,70

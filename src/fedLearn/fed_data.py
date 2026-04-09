@@ -56,8 +56,18 @@ def split_clients(data_folder, data_file, label_name, n_features=45, num_clients
         df = pd.read_csv(file_path)
     except FileNotFoundError:
         raise FileNotFoundError(f"File '{data_file}' not found in '{data_folder}'.")
+    
+    logger.info(f"Available columns: {list(df.columns)}")
+    logger.info(f"Looking for label column: '{label_name}'")
+    
+    if label_name not in df.columns:
+        raise KeyError(f"Label column '{label_name}' not found. Available: {list(df.columns)}")
 
     selected_cols = df.columns[:n_features].tolist() + [label_name]
+    missing = [col for col in selected_cols if col not in df.columns]
+    if missing:
+        raise KeyError(f"Missing columns: {missing}. Available: {list(df.columns)}")
+    
     df = df[selected_cols]
     df = df.sample(frac=1, random_state=seed).reset_index(drop=True)
 
@@ -132,8 +142,25 @@ def federated_data_dirichlet(
         raise FileNotFoundError(f"File '{data_file}' not found in '{data_folder}'")
 
     df = pd.read_csv(file_path)
+    
+    # Debug: Check available columns
+    logger.info(f"Available columns in {file_path.name}: {list(df.columns)}")
+    logger.info(f"Looking for label column: '{label_name}'")
+    
+    # Validate that label column exists
+    if label_name not in df.columns:
+        raise KeyError(f"Label column '{label_name}' not found in dataset. Available columns: {list(df.columns)}")
+    
     selected_cols = df.columns[:n_features].tolist() + [label_name]
+    logger.info(f"Selected columns (first {n_features} + label): {selected_cols}")
+    
+    # Ensure all selected columns exist
+    missing_cols = [col for col in selected_cols if col not in df.columns]
+    if missing_cols:
+        raise KeyError(f"Missing columns: {missing_cols}. Available: {list(df.columns)}")
+    
     df = df[selected_cols].dropna()
+    logger.info(f"Data shape after column selection and NaN removal: {df.shape}")
 
     if sample_size and len(df) > sample_size:
         df = df.sample(n=sample_size, random_state=seed).reset_index(drop=True)

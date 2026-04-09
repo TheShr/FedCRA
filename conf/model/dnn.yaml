@@ -1,7 +1,7 @@
 ---
 _target_: src.deepLearn.model.DNN
-input_size: 78
-output_size: 6
+input_size: 30
+output_size: 5 # 6 for cic_ids_2017.csv.bz2, 4 for cic_iomt.csv.bz2, 5 for iomt_traffic_ip_flow.csv.bz2
 hidden_layers: 5
 hidden_units: 128
 activation: "ReLU"

@@ -12,9 +12,9 @@ hydra:
 
 dataset:
   dataset_name: 'iomt_traffic'
-  data_file_name: 'cic_ids_2017.csv.bz2'
+  data_file_name: 'iomt_traffic_ip_flow.csv.bz2' # cic_iomt.csv.bz2, iomt_traffic_ip_flow.csv.bz2
   label_name: 'Label'
-  n_features: 78
+  n_features: 30   # 78 for cic_ids_2017.csv.bz2, 30 iomt_traffic_ip_flow.csv.bz2, 45 for cic_iomt.csv.bz2, 
 
 data_config:
   folder_name: '${PROJECT_PATH}/data/${dataset.dataset_name}'
@@ -31,7 +31,7 @@ fed_config:
   clients: ['client1', 'client2', 'client3', 'client4', 'client5', 'client6', 'client7', 'client8', 'client9', 'client10']
   server_address: "127.0.0.1:8085"
   client_name: ''
-  num_rounds: 80
+  num_rounds: 100
   num_clients: 10
   fed_strategy: ${strategy_name}
   num_clients_per_round_fit: 10
