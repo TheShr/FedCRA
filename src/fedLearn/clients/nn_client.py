@@ -209,6 +209,7 @@ def _fed_train_cra(model, epochs, optimizer, train_loader,
     return {
         "loss": running_loss / max(steps, 1),
         "accuracy": accuracy_score(all_labels, all_preds),
+        "error_rate": 1 - accuracy_score(all_labels, all_preds),
         "precision": precision_score(all_labels, all_preds, average="macro", zero_division=0),
         "recall": recall_score(all_labels, all_preds, average="macro", zero_division=0),
         "f1_score": f1_score(all_labels, all_preds, average="macro", zero_division=0),

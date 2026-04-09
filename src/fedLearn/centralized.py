@@ -125,6 +125,7 @@ def fed_train(model, epochs, optimizer, train_loader, class_weights=None,
     return {
         "loss":        running_loss / max(epoch_steps, 1),
         "accuracy":    correct / max(total, 1),
+        "error_rate":  1 - (correct / max(total, 1)),
         "precision":   precision_score(all_labels, all_predictions,
                                        average="macro", zero_division=0),
         "recall":      recall_score(all_labels, all_predictions,
@@ -178,6 +179,7 @@ def fed_test(model, test_loader, num_classes=None):
     metrics = {
         "loss":         total_loss / max(total_samples, 1),  # ✅ now correct
         "accuracy":     accuracy_score(all_labels, all_predictions),
+        "error_rate":   1 - accuracy_score(all_labels, all_predictions),
         "precision":    precision_score(all_labels, all_predictions,
                                         average="macro", zero_division=0),
         "recall":       recall_score(all_labels, all_predictions,

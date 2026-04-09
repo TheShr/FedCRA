@@ -242,6 +242,7 @@ class XgbFedClient(fl.client.Client):
             "round": self.current_round,
             "AUC": auc,
             "accuracy": accuracy,
+            "error_rate": 1 - accuracy,
             "f1_score": f1,
             "precision": precision,
             "recall": recall,
