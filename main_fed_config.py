@@ -279,21 +279,35 @@ def main(cfg: DictConfig) -> None:
     # Optimize GPU allocation for 12GB GPU: give each client more GPU for faster training
     # With 10 clients, each gets ~1.2GB GPU memory (more than enough for DNN)
     per_client_gpus = 0.15  # 1.8GB per client total, allows ~5-6 parallel clients
-    history = fl.simulation.start_simulation(
-        client_fn=client_fn,
-        num_clients=cfg.fed_config.num_clients,
-        config=fl.server.ServerConfig(num_rounds=cfg.fed_config.num_rounds),
-        strategy=strategy,
-        client_resources={
-            "num_cpus": per_client_cpus,
-            "num_gpus": per_client_gpus,
-        },
-        ray_init_args={
-            "ignore_reinit_error": True,
-            "include_dashboard": False,
-            "num_cpus": cfg.fed_config.num_cpus,
-        },
-    )
+    
+    logger.info(f"Starting federated learning simulation...")
+    logger.info(f"  Clients: {cfg.fed_config.num_clients}")
+    logger.info(f"  Rounds: {cfg.fed_config.num_rounds}")
+    logger.info(f"  Strategy: {cfg.strategy.name}")
+    logger.info(f"  CPUs per client: {per_client_cpus}")
+    logger.info(f"  GPUs per client: {per_client_gpus}")
+    
+    try:
+        history = fl.simulation.start_simulation(
+            client_fn=client_fn,
+            num_clients=cfg.fed_config.num_clients,
+            config=fl.server.ServerConfig(num_rounds=cfg.fed_config.num_rounds),
+            strategy=strategy,
+            client_resources={
+                "num_cpus": per_client_cpus,
+                "num_gpus": per_client_gpus,
+            },
+            ray_init_args={
+                "ignore_reinit_error": True,
+                "include_dashboard": False,
+                "num_cpus": cfg.fed_config.num_cpus,
+            },
+        )
+    except Exception as e:
+        logger.error(f"Simulation failed with error: {type(e).__name__}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise
 
     hist_file = model_root / f"history_{cfg.dataset.dataset_name}.pkl"
     with open(hist_file, "wb") as h:

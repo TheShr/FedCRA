@@ -13,8 +13,8 @@ hydra:
 dataset:
   dataset_name: 'iomt_traffic'
   data_file_name: 'iomt_traffic_ip_flow.csv.bz2' # cic_iomt.csv.bz2, iomt_traffic_ip_flow.csv.bz2
-  label_name: 'Label'
-  n_features: 30   # 78 for cic_ids_2017.csv.bz2, 30 iomt_traffic_ip_flow.csv.bz2, 45 for cic_iomt.csv.bz2, 
+  label_name: 'Category'
+  n_features: 30   # 78 for cic_ids_2017.csv.bz2, 30 iomt_traffic_ip_flow.csv.bz2, 45 for cic_iomt.csv.bz2 
 
 data_config:
   folder_name: '${PROJECT_PATH}/data/${dataset.dataset_name}'

@@ -392,7 +392,7 @@ def generate_client_fn(model_fn, train_loaders, test_loaders, client_names, resu
                 test_loader=test_loaders[int(client_id)],
                 client_names=client_names,
                 results_path=results_path,
-            ).to_client()
+            )
         except Exception as e:
             logger.error(f"Error in client {client_id}: {e}")
             raise

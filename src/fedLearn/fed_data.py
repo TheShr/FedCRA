@@ -53,9 +53,17 @@ def split_clients(data_folder, data_file, label_name, n_features=45, num_clients
     file_path = Path(data_folder) / data_file
     logger.info(f"Loading data from {file_path}")
     try:
-        df = pd.read_csv(file_path)
+        # Handle BZ2 compressed files
+        if str(file_path).endswith('.bz2'):
+            import bz2
+            with bz2.open(file_path, 'rt') as f:
+                df = pd.read_csv(f)
+        else:
+            df = pd.read_csv(file_path)
     except FileNotFoundError:
         raise FileNotFoundError(f"File '{data_file}' not found in '{data_folder}'.")
+    except Exception as e:
+        raise RuntimeError(f"Error reading {data_file}: {e}")
     
     logger.info(f"Available columns: {list(df.columns)}")
     logger.info(f"Looking for label column: '{label_name}'")
