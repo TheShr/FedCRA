@@ -1,0 +1,160 @@
+PROJECT_PATH: /workspace/fed_iomt/dataset
+dataset:
+  dataset_name: iomt_traffic
+  data_file_name: iomt_traffic_ip_flow.csv.bz2
+  label_name: Category
+  n_features: 30
+  num_classes: 9
+data_config:
+  folder_name: ${PROJECT_PATH}/data/${dataset.dataset_name}
+  file_name: ${PROJECT_PATH}/data/${dataset.dataset_name}/${dataset.data_file_name}
+  label_name: ${dataset.label_name}
+  sample_size: 20000
+  n_features: ${dataset.n_features}
+  label_encoding_type: label_encoding
+  alpha: 0.1
+strategy_name: FedAvg
+fed_config:
+  clients:
+  - client1
+  - client2
+  - client3
+  - client4
+  - client5
+  - client6
+  - client7
+  - client8
+  - client9
+  - client10
+  server_address: 127.0.0.1:8085
+  client_name: ''
+  num_rounds: 2
+  num_clients: 2
+  fed_strategy: ${strategy_name}
+  num_clients_per_round_fit: 10
+  num_clients_per_round_eval: 10
+  fraction_fit: 1
+  fraction_eval: 1
+  num_cpus: 8
+  num_gpus: 1
+  train_batch_size: 512
+  num_client_local_rounds: 10
+  epochs: 5
+  learning_rate: 0.004
+  model_results_path: ${PROJECT_PATH}/models/${dataset.dataset_name}/${dataset.label_name}
+seed: 42
+model:
+  _target_: src.deepLearn.model.DNN
+  input_size: ${dataset.n_features}
+  output_size: ${dataset.num_classes}
+  hidden_layers: 5
+  hidden_units: 128
+  activation: ReLU
+strategy:
+  name: FedCRA
+  params: {}
+config_fit:
+  hidden_layers: 5
+  hidden_units: 128
+  learning_rate: 0.001
+  optimizer: Adam
+  activation: ReLU
+  batch_size: 128
+  epochs: 5
+
+2026-04-09 16:07:47 - __main__ - INFO - Global seed set to 42
+[2026-04-09 16:07:47,434][__main__][INFO] - Global seed set to 42
+2026-04-09 16:07:47 - __main__ - INFO - Data folder   = /workspace/fed_iomt/dataset/data/iomt_traffic
+[2026-04-09 16:07:47,436][__main__][INFO] - Data folder   = /workspace/fed_iomt/dataset/data/iomt_traffic
+2026-04-09 16:07:47 - __main__ - INFO - Results base  = /workspace/fed_iomt/dataset/models/iomt_traffic/Category
+[2026-04-09 16:07:47,436][__main__][INFO] - Results base  = /workspace/fed_iomt/dataset/models/iomt_traffic/Category
+2026-04-09 16:07:55 - src.fedLearn.fed_data - INFO - Available columns in iomt_traffic_ip_flow.csv.bz2: ['service', 'total_bytes', 'total_pkts', 'pkt_difference', 'byte_difference', 'total_data_pkts', 'payload_ratio', 'total_payload_volume', 'fwd_bwd_pkts_diff', 'duration_weighted_pkts', 'pkts_size_weighted', 'flow_pkts_size_weighted', 'header_size_ratio', 'total_header_size', 'header_size_diff', 'fwd_bwd_payload_tot_diff', 'fwd_bwd_payload_avg_diff', 'flow_fwd_payload_diff', 'flow_bwd_payload_diff', 'flow_payload_range', 'total_activity', 'history_originator', 'history_responder', 'proto_1', 'proto_2', 'proto_3', 'pkts_unidirectional_traffic_0', 'pkts_unidirectional_traffic_1', 'iat_is_unidirectional_False', 'iat_is_unidirectional_True', 'Binary', 'Category']
+[2026-04-09 16:07:55,883][src.fedLearn.fed_data][INFO] - Available columns in iomt_traffic_ip_flow.csv.bz2: ['service', 'total_bytes', 'total_pkts', 'pkt_difference', 'byte_difference', 'total_data_pkts', 'payload_ratio', 'total_payload_volume', 'fwd_bwd_pkts_diff', 'duration_weighted_pkts', 'pkts_size_weighted', 'flow_pkts_size_weighted', 'header_size_ratio', 'total_header_size', 'header_size_diff', 'fwd_bwd_payload_tot_diff', 'fwd_bwd_payload_avg_diff', 'flow_fwd_payload_diff', 'flow_bwd_payload_diff', 'flow_payload_range', 'total_activity', 'history_originator', 'history_responder', 'proto_1', 'proto_2', 'proto_3', 'pkts_unidirectional_traffic_0', 'pkts_unidirectional_traffic_1', 'iat_is_unidirectional_False', 'iat_is_unidirectional_True', 'Binary', 'Category']
+2026-04-09 16:07:55 - src.fedLearn.fed_data - INFO - Looking for label column: 'Category'
+[2026-04-09 16:07:55,884][src.fedLearn.fed_data][INFO] - Looking for label column: 'Category'
+2026-04-09 16:07:55 - src.fedLearn.fed_data - INFO - Selected columns (first 30 + label): ['service', 'total_bytes', 'total_pkts', 'pkt_difference', 'byte_difference', 'total_data_pkts', 'payload_ratio', 'total_payload_volume', 'fwd_bwd_pkts_diff', 'duration_weighted_pkts', 'pkts_size_weighted', 'flow_pkts_size_weighted', 'header_size_ratio', 'total_header_size', 'header_size_diff', 'fwd_bwd_payload_tot_diff', 'fwd_bwd_payload_avg_diff', 'flow_fwd_payload_diff', 'flow_bwd_payload_diff', 'flow_payload_range', 'total_activity', 'history_originator', 'history_responder', 'proto_1', 'proto_2', 'proto_3', 'pkts_unidirectional_traffic_0', 'pkts_unidirectional_traffic_1', 'iat_is_unidirectional_False', 'iat_is_unidirectional_True', 'Category']
+[2026-04-09 16:07:55,884][src.fedLearn.fed_data][INFO] - Selected columns (first 30 + label): ['service', 'total_bytes', 'total_pkts', 'pkt_difference', 'byte_difference', 'total_data_pkts', 'payload_ratio', 'total_payload_volume', 'fwd_bwd_pkts_diff', 'duration_weighted_pkts', 'pkts_size_weighted', 'flow_pkts_size_weighted', 'header_size_ratio', 'total_header_size', 'header_size_diff', 'fwd_bwd_payload_tot_diff', 'fwd_bwd_payload_avg_diff', 'flow_fwd_payload_diff', 'flow_bwd_payload_diff', 'flow_payload_range', 'total_activity', 'history_originator', 'history_responder', 'proto_1', 'proto_2', 'proto_3', 'pkts_unidirectional_traffic_0', 'pkts_unidirectional_traffic_1', 'iat_is_unidirectional_False', 'iat_is_unidirectional_True', 'Category']
+2026-04-09 16:07:56 - src.fedLearn.fed_data - INFO - Data shape after column selection and NaN removal: (585743, 31)
+[2026-04-09 16:07:56,043][src.fedLearn.fed_data][INFO] - Data shape after column selection and NaN removal: (585743, 31)
+2026-04-09 16:07:56 - src.fedLearn.fed_data - INFO - [Dirichlet] Client 1: class dist = {0: 0.0, 1: 0.024, 2: 0.133, 3: 0.012, 5: 0.669, 6: 0.16, 7: 0.002, 8: 0.0}
+[2026-04-09 16:07:56,086][src.fedLearn.fed_data][INFO] - [Dirichlet] Client 1: class dist = {0: 0.0, 1: 0.024, 2: 0.133, 3: 0.012, 5: 0.669, 6: 0.16, 7: 0.002, 8: 0.0}
+2026-04-09 16:07:56 - src.fedLearn.fed_data - INFO - [Dirichlet] Client 1: 10318 train | 1289 val | classes=[0, 1, 2, 3, 5, 6, 7, 8]
+[2026-04-09 16:07:56,088][src.fedLearn.fed_data][INFO] - [Dirichlet] Client 1: 10318 train | 1289 val | classes=[0, 1, 2, 3, 5, 6, 7, 8]
+2026-04-09 16:07:56 - src.fedLearn.fed_data - INFO - [Dirichlet] Client 2: class dist = {0: 0.018, 2: 0.022, 3: 0.0, 4: 0.454, 5: 0.021, 7: 0.439, 8: 0.046}
+[2026-04-09 16:07:56,089][src.fedLearn.fed_data][INFO] - [Dirichlet] Client 2: class dist = {0: 0.018, 2: 0.022, 3: 0.0, 4: 0.454, 5: 0.021, 7: 0.439, 8: 0.046}
+2026-04-09 16:07:56 - src.fedLearn.fed_data - INFO - [Dirichlet] Client 2: 3285 train | 410 val | classes=[0, 2, 3, 4, 5, 7, 8]
+[2026-04-09 16:07:56,089][src.fedLearn.fed_data][INFO] - [Dirichlet] Client 2: 3285 train | 410 val | classes=[0, 2, 3, 4, 5, 7, 8]
+2026-04-09 16:07:56 - __main__ - INFO - Strategy      = FedCRA
+[2026-04-09 16:07:56,334][__main__][INFO] - Strategy      = FedCRA
+2026-04-09 16:07:56 - __main__ - INFO - Model root    = /workspace/fed_iomt/dataset/models/iomt_traffic/Category/FedCRA/DNN
+[2026-04-09 16:07:56,334][__main__][INFO] - Model root    = /workspace/fed_iomt/dataset/models/iomt_traffic/Category/FedCRA/DNN
+WARNING flwr 2026-04-09 16:07:56,340 | fedavg.py:118 | 
+Setting `min_available_clients` lower than `min_fit_clients` or
+`min_evaluate_clients` can cause the server to fail when there are too few clients
+connected to the server. `min_available_clients` must be set to a value larger
+than or equal to the values of `min_fit_clients` and `min_evaluate_clients`.
+
+[2026-04-09 16:07:56,340][flwr][WARNING] - 
+Setting `min_available_clients` lower than `min_fit_clients` or
+`min_evaluate_clients` can cause the server to fail when there are too few clients
+connected to the server. `min_available_clients` must be set to a value larger
+than or equal to the values of `min_fit_clients` and `min_evaluate_clients`.
+
+Error executing job with overrides: ['strategy.name=FedCRA', 'fed_config.num_clients=2', 'fed_config.num_rounds=2', 'data_config.alpha=0.1']
+Traceback (most recent call last):
+  File "/workspace/fed_iomt/main_fed_config.py", line 320, in <module>
+    main()
+  File "/workspace/fed_iomt/venv/lib/python3.12/site-packages/hydra/main.py", line 94, in decorated_main
+    _run_hydra(
+  File "/workspace/fed_iomt/venv/lib/python3.12/site-packages/hydra/_internal/utils.py", line 394, in _run_hydra
+    _run_app(
+  File "/workspace/fed_iomt/venv/lib/python3.12/site-packages/hydra/_internal/utils.py", line 457, in _run_app
+    run_and_report(
+  File "/workspace/fed_iomt/venv/lib/python3.12/site-packages/hydra/_internal/utils.py", line 223, in run_and_report
+    raise ex
+  File "/workspace/fed_iomt/venv/lib/python3.12/site-packages/hydra/_internal/utils.py", line 220, in run_and_report
+    return func()
+           ^^^^^^
+  File "/workspace/fed_iomt/venv/lib/python3.12/site-packages/hydra/_internal/utils.py", line 458, in <lambda>
+    lambda: hydra.run(
+            ^^^^^^^^^^
+  File "/workspace/fed_iomt/venv/lib/python3.12/site-packages/hydra/_internal/hydra.py", line 132, in run
+    _ = ret.return_value
+        ^^^^^^^^^^^^^^^^
+  File "/workspace/fed_iomt/venv/lib/python3.12/site-packages/hydra/core/utils.py", line 260, in return_value
+    raise self._return_value
+  File "/workspace/fed_iomt/venv/lib/python3.12/site-packages/hydra/core/utils.py", line 186, in run_job
+    ret.return_value = task_function(task_cfg)
+                       ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/fed_iomt/main_fed_config.py", line 267, in main
+    strategy = build_strategy(
+               ^^^^^^^^^^^^^^^
+  File "/workspace/fed_iomt/main_fed_config.py", line 174, in build_strategy
+    return FedCRA(
+           ^^^^^^^
+  File "/workspace/fed_iomt/src/fedLearn/strategies/fedcra_strategy.py", line 99, in __init__
+    self.proximal_mu = config.strategy.params.proximal_mu
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/fed_iomt/venv/lib/python3.12/site-packages/omegaconf/dictconfig.py", line 355, in __getattr__
+    self._format_and_raise(
+  File "/workspace/fed_iomt/venv/lib/python3.12/site-packages/omegaconf/base.py", line 231, in _format_and_raise
+    format_and_raise(
+  File "/workspace/fed_iomt/venv/lib/python3.12/site-packages/omegaconf/_utils.py", line 899, in format_and_raise
+    _raise(ex, cause)
+  File "/workspace/fed_iomt/venv/lib/python3.12/site-packages/omegaconf/_utils.py", line 797, in _raise
+    raise ex.with_traceback(sys.exc_info()[2])  # set env var OC_CAUSE=1 for full trace
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/fed_iomt/venv/lib/python3.12/site-packages/omegaconf/dictconfig.py", line 351, in __getattr__
+    return self._get_impl(
+           ^^^^^^^^^^^^^^^
+  File "/workspace/fed_iomt/venv/lib/python3.12/site-packages/omegaconf/dictconfig.py", line 442, in _get_impl
+    node = self._get_child(
+           ^^^^^^^^^^^^^^^^
+  File "/workspace/fed_iomt/venv/lib/python3.12/site-packages/omegaconf/basecontainer.py", line 73, in _get_child
+    child = self._get_node(
+            ^^^^^^^^^^^^^^^
+  File "/workspace/fed_iomt/venv/lib/python3.12/site-packages/omegaconf/dictconfig.py", line 480, in _get_node
+    raise ConfigKeyError(f"Missing key {key!s}")
+omegaconf.errors.ConfigAttributeError: Missing key proximal_mu
+    full_key: strategy.params.proximal_mu
+    object_type=dict

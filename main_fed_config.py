@@ -217,6 +217,7 @@ def build_strategy(cfg: DictConfig, model, evaluate_fn, server_model_dir: str, s
 @hydra.main(config_path="conf", config_name="config", version_base=None)
 def main(cfg: DictConfig) -> None:
     os.environ["HYDRA_FULL_ERROR"] = "1"
+    OmegaConf.set_struct(cfg, False)
     print(OmegaConf.to_yaml(cfg))
 
     seed = int(cfg.get("seed", 42))
