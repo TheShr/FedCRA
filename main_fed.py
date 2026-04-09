@@ -93,6 +93,12 @@ def evaluate_server_model(model, test_loader):
     FPR = FP / (FP + TN + 1e-10)
     macro_fpr = float(np.mean(FPR))  # Mean FPR across all classes
 
+    # Compute error rates
+    error_rate = 1.0 - accuracy
+    per_class_accuracy = np.diag(cm) / (cm.sum(axis=1) + 1e-10)
+    per_class_error_rate = 1.0 - per_class_accuracy
+    per_class_error_rate_dict = {f"class_{i}_error_rate": float(per_class_error_rate[i]) for i in range(len(per_class_error_rate))}
+
 
     return {
         "loss": total_loss / total_samples,
@@ -100,7 +106,9 @@ def evaluate_server_model(model, test_loader):
         "precision": precision,
         "recall": recall,
         "f1_score": f1,
-        "macro_fpr": macro_fpr
+        "macro_fpr": macro_fpr,
+        "error_rate": error_rate,
+        **per_class_error_rate_dict
     }
 
 
@@ -127,7 +135,9 @@ def save_server_metrics_json(metrics, server_round, results_path, communication_
         "recall": metrics["recall"],
         "f1_score": metrics["f1_score"],
         "macro_fpr": metrics["macro_fpr"],
-        "communication_time": communication_time
+        "error_rate": metrics["error_rate"],
+        "communication_time": communication_time,
+        **{k: v for k, v in metrics.items() if k.startswith("class_") and k.endswith("_error_rate")}
     })
 
     with open(file_name, "w") as json_file:
