@@ -1,0 +1,3 @@
+name: FedProx
+params:
+  proximal_mu: 0.001

@@ -1,0 +1,6 @@
+name: FedYogi
+params:
+  eta: 1.0          # Server learning rate (default in Flower = 1.0)
+  beta_1: 0.9       # Exponential decay rate for first moment estimates
+  beta_2: 0.99      # Exponential decay rate for second moment estimates
+  tau: 1e-3         # Controls adaptation of learning rates (Yogi-specific)

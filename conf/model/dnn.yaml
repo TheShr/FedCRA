@@ -1,0 +1,7 @@
+---
+_target_: src.deepLearn.model.DNN
+input_size: 78
+output_size: 6
+hidden_layers: 5
+hidden_units: 128
+activation: "ReLU"
