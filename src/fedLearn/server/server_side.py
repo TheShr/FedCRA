@@ -12,6 +12,7 @@ def get_on_fit_config(client_configs):
             "activation": client_configs['activation'],
             "batch_size": client_configs['batch_size'],
             "epochs": client_configs['epochs'],
+            "cra_grad_clip": client_configs.get('cra_grad_clip', 1.0),
             "round_id": server_round
         }
     return fit_config_fn

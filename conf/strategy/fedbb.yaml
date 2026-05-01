@@ -1,0 +1,3 @@
+name: FedBB
+params:
+  bb_beta: 0.5

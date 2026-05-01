@@ -1,0 +1,28 @@
+defaults:
+  - config
+
+# Override sample size, Dirichlet alpha, imbalance, and client count for a single experiment.
+# Use `custom_imbalance` for a simple ratio string, or provide explicit class ratios.
+
+dataset:
+  total_samples: 100000
+
+# Dataset-agnostic Dirichlet heterogeneity.
+dirichlet:
+  alpha: 0.1
+
+# You can provide either `custom_imbalance` or explicit `class_ratios`.
+custom_imbalance: '1:10'
+
+imbalance:
+  class_ratios:
+    # If you want exact class-level ratios, uncomment and edit this block.
+    # Normal: 10
+    # DoS: 5
+    # DDoS: 3
+    # Mirai: 2
+    # ARP: 1
+    # Recon: 1
+
+fed_config:
+  num_clients: 10

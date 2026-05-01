@@ -1,400 +1,420 @@
 """
-nn_client.py — Flower NumPyClient with FedCRA support.
+FedCRA Client Training — Improved Implementation
+=================================================
 
-CRA loss gating: the anchor loss for class k is only applied when the current
-batch has at least MIN_CLASS_SAMPLES samples of class k.
-
-Fairness fixes (v7):
-  - FedAvg path now applies gradient clipping identical to the FedCRA path
-    (max_norm = cra_grad_clip, defaulting to 1.0). Previously FedCRA had
-    gradient clipping but FedAvg did not, creating an unfair advantage for
-    FedCRA under heterogeneous data (larger gradient variance on FedAvg).
-  - fed_train (FedAvg path) now returns f1_weighted to match fed_test output,
-    eliminating metric inconsistency between train and test phases.
-  - Centroid computation uses a no-shuffle pass over the loader so that the
-    accumulated sums are deterministic regardless of DataLoader state.
-
-FedCRA v7 changes:
-  - beta defaults to 0.4 (was 0.4, unchanged); now sourced from config with
-    explicit float cast to guard against YAML type coercion.
-  - class_weights default to uniform (all ones) when the key is absent from
-    config, instead of None, so CrossEntropyLoss receives a valid weight tensor
-    in all cases.
+Implements the client-side FedCRA training with:
+1. Selective class alignment (Component D)
+2. Proper loss combination (CE + CRA + Proximal)
+3. Class-balanced weighting
+4. Efficient single-pass forward with embedding extraction
 """
 
-import torch.optim as optim
-from collections import OrderedDict
-from flwr.common import NDArrays
 import torch
 import torch.nn as nn
+import torch.optim as optim
 import numpy as np
-import flwr as fl
-import os
 import json
-import time
-from pathlib import Path
-from log_config import base_logger
-from src.fedLearn.centralized import fed_train, fed_test
-from sklearn.metrics import (accuracy_score, precision_score,
-                             recall_score, f1_score, confusion_matrix)
-
-import warnings
-warnings.filterwarnings("ignore", message=".*pin_memory.*no accelerator.*")
-
-logger = base_logger(__name__)
-
-# Minority-class batches are never silently skipped
-MIN_CLASS_SAMPLES = 1
+from typing import Dict, Tuple, Optional
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    confusion_matrix
+)
 
 
-def _fed_train_cra(model, epochs, optimizer, train_loader,
-                   anchors: np.ndarray, confidence: np.ndarray, proximal_mu: float,
-                   global_params: list, num_classes: int, grad_clip: float = 1.0):
+def train_fedcra(
+    model: nn.Module,
+    train_loader,
+    optimizer: optim.Optimizer,
+    epochs: int,
+    cra_config: dict,
+    global_params: list,
+    grad_clip: float = 1.0,
+    device: Optional[torch.device] = None,
+) -> Dict[str, float]:
     """
-    NEW FedCRA v10: Selective Class Alignment + Proximal Regularization
-
-    - Selective: Apply CRA loss ONLY for classes present in client's data
-    - Confidence Scaling: Scale CRA loss by anchor confidence conf_c
-    - Proximal: Add FedProx regularization to prevent divergence
-    - No static alpha/rho/beta: Dynamic based on client data and anchor quality
+    FedCRA client training with all four novel components.
+    
+    Loss Formulation:
+    -----------------
+    Total Loss = CE(y, ŷ) + λ_CRA × CRA(embeddings) + (μ_c/2) × ||θ - θ_g||²
+    
+    Where:
+    - CE: Cross-entropy loss with class weighting
+    - CRA: Anchor alignment loss (embedding space)
+    - μ_c: Class-conditional proximal penalty (parameter space)
+    
+    Parameters:
+    -----------
+    model : nn.Module
+        Local client model
+        
+    train_loader : DataLoader
+        Training data for this client
+        
+    optimizer : optim.Optimizer
+        Optimizer (SGD recommended)
+        
+    epochs : int
+        Number of local training epochs
+        
+    cra_config : dict
+        FedCRA configuration from server containing:
+        - cra_anchors: Global class anchors [num_classes, embedding_dim]
+        - cra_confidence: Anchor confidence scores [num_classes]
+        - cra_mu_c: Class-conditional penalties [num_classes]
+        - cra_num_classes: Number of classes
+        - round_id: Current federated round
+        
+    global_params : list
+        Global model parameters for proximal term
+        
+    grad_clip : float
+        Gradient clipping norm
+        
+    device : torch.device
+        Device for computation
+    
+    Returns:
+    --------
+    metrics : dict
+        Training metrics including:
+        - loss, accuracy, f1_score, etc.
+        - cra_residuals: Per-class embeddings for server
+        - cra_class_counts: Class distribution
     """
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
     model.to(device)
-
-    anchors_t = torch.tensor(anchors, dtype=torch.float32, device=device)
-    confidence_t = torch.tensor(confidence, dtype=torch.float32, device=device)
-
-    # Convert global params to tensors for proximal loss
-    global_params_t = [torch.tensor(p, dtype=torch.float32, device=device) for p in global_params]
-
-    # Normalize anchors
-    anchor_norms = anchors_t.norm(dim=1, keepdim=True).clamp(min=1e-8)
-    anchors_norm_t = anchors_t / anchor_norms
-    anchor_valid = (anchors_t.norm(dim=1) > 1e-6)
-
-    # CE loss (no focal, no class weights - keep it simple)
-    criterion = nn.CrossEntropyLoss(reduction='none')
-
-    # Hook for penultimate layer
-    penultimate = []
+    model.train()
+    
+    # Parse configuration
+    num_classes = int(cra_config["cra_num_classes"])
+    round_id = int(cra_config.get("round_id", 0))
+    
+    # Parse global anchors and confidence
+    anchors = torch.tensor(
+        json.loads(cra_config["cra_anchors"]),
+        dtype=torch.float32,
+        device=device
+    )  # [num_classes, embedding_dim]
+    
+    confidence = torch.tensor(
+        json.loads(cra_config["cra_confidence"]),
+        dtype=torch.float32,
+        device=device
+    )  # [num_classes]
+    
+    # Parse class-conditional penalties (μ_c)
+    mu_c = torch.tensor(
+        json.loads(cra_config["cra_mu_c"]),
+        dtype=torch.float32,
+        device=device
+    )  # [num_classes]
+    
+    # Convert global params to tensors
+    global_params_dict = {}
+    for name, param in zip(model.state_dict().keys(), global_params):
+        global_params_dict[name] = torch.tensor(param, dtype=torch.float32, device=device)
+    
+    # Normalize anchors for distance computation
+    anchor_norms = anchors.norm(dim=1, keepdim=True).clamp(min=1e-8)
+    anchors_normalized = anchors / anchor_norms
+    anchor_valid = (anchors.norm(dim=1) > 1e-6)
+    
+    # ══════════════════════════════════════════════════════════════════
+    # COMPONENT D: Selective Class Alignment
+    # ══════════════════════════════════════════════════════════════════
+    # Track which classes are present in client's data
+    client_class_counts = np.zeros(num_classes, dtype=np.int32)
+    
+    # First pass: count class frequencies
+    for _, labels_batch in train_loader:
+        for label in labels_batch.numpy():
+            client_class_counts[label] += 1
+    
+    # Compute class weights for balanced loss
+    total_samples = sum(client_class_counts)
+    class_weights = np.ones(num_classes, dtype=np.float32)
+    
+    if total_samples > 0:
+        for c in range(num_classes):
+            if client_class_counts[c] > 0:
+                # Inverse frequency weighting (sqrt for moderate scaling)
+                freq = client_class_counts[c] / total_samples
+                class_weights[c] = np.sqrt(1.0 / (freq + 1e-8))
+        
+        # Normalize to mean = 1.0
+        class_weights = class_weights / (np.mean(class_weights[client_class_counts > 0]) + 1e-8)
+    
+    weights_tensor = torch.tensor(class_weights, dtype=torch.float32, device=device)
+    criterion = nn.CrossEntropyLoss(weight=weights_tensor)
+    
+    # Setup hook for penultimate layer embeddings
+    penultimate_embeddings = []
     hook_handle = None
-
+    
     if hasattr(model, "fc_layers") and len(model.fc_layers) >= 2:
         hook_handle = model.fc_layers[-2].register_forward_hook(
-            lambda m, i, o: penultimate.append(o)
+            lambda m, i, o: penultimate_embeddings.append(o)
         )
     else:
-        logger.warning("FedCRA: penultimate layer not found — using CE only")
-        return fed_train(model=model, epochs=epochs, optimizer=optimizer,
-                         train_loader=train_loader, grad_clip=grad_clip)
-
-    # Track which classes are present in this client's data
-    client_class_counts = np.zeros(num_classes, dtype=np.int32)
-
+        # Fallback: no CRA loss if architecture doesn't support it
+        print("Warning: Model architecture incompatible with FedCRA. Using standard training.")
+        hook_handle = None
+    
+    # ══════════════════════════════════════════════════════════════════
+    # Training Loop
+    # ══════════════════════════════════════════════════════════════════
     running_loss = 0.0
-    steps = 0
-    all_labels, all_preds = [], []
-
+    num_steps = 0
+    all_labels = []
+    all_preds = []
+    
+    # Reset counts for training tracking
+    client_class_counts = np.zeros(num_classes, dtype=np.int32)
+    
+    # CRA strength gating (warm-up + confidence)
+    anchors_ready = int(cra_config.get("cra_anchors_ready", 0))
+    cra_enabled = (anchors_ready >= num_classes // 2) and (round_id >= 5)
+    avg_confidence = confidence.mean().item()
+    cra_strength = min(1.0, round_id / 20.0) * max(0.1, avg_confidence) if cra_enabled else 0.0
+    
     try:
-        model.train()
         for epoch in range(epochs):
             for inputs, labels in train_loader:
                 inputs = inputs.to(device, non_blocking=True)
                 labels = labels.to(device, non_blocking=True)
-
-                # Update class counts for selective alignment
+                
+                # Track class distribution
                 for label in labels.cpu().numpy():
                     client_class_counts[label] += 1
-
-                penultimate.clear()
-                optimizer.zero_grad()
+                
+                # Forward pass
+                penultimate_embeddings.clear()
+                optimizer.zero_grad(set_to_none=True)
                 outputs = model(inputs)
-
-                # CE loss
-                ce_loss = criterion(outputs, labels).mean()
-
-                # CRA loss: Selective alignment
+                
+                # ──────────────────────────────────────────────────────
+                # Loss Component 1: Cross-Entropy
+                # ──────────────────────────────────────────────────────
+                ce_loss = criterion(outputs, labels)
+                
+                # ──────────────────────────────────────────────────────
+                # Loss Component 2: CRA Alignment Loss
+                # ──────────────────────────────────────────────────────
+                lambda_cra = cra_config.get("lambda_cra", 0.1)  # Use config value
                 cra_loss = torch.tensor(0.0, device=device)
-
-                if penultimate and anchor_valid.any():
-                    acts = penultimate[0]  # (N, D)
-
-                    # Normalize activations
-                    acts_norm = acts / acts.norm(dim=1, keepdim=True).clamp(min=1e-8)
-
-                    # Compute distances to anchors
-                    dots = acts_norm @ anchors_norm_t.t()  # (N, num_classes)
-                    sq_dists = (2.0 - 2.0 * dots).clamp(min=0)  # (N, num_classes)
-
-                    per_sample_cra = []
-
-                    for i in range(acts_norm.shape[0]):
-                        y_i = int(labels[i].item())
-
-                        # SELECTIVE: Only apply if client has this class
-                        if client_class_counts[y_i] == 0 or not anchor_valid[y_i]:
+                
+                if cra_strength > 0.0 and penultimate_embeddings and anchor_valid.any():
+                    embeddings = penultimate_embeddings[0]  # [batch_size, embedding_dim]
+                    
+                    # L2-normalize embeddings
+                    embeddings_norm = embeddings / (
+                        embeddings.norm(dim=1, keepdim=True).clamp(min=1e-8)
+                    )
+                    
+                    batch_size = labels.size(0)
+                    
+                    for class_id in range(num_classes):
+                        mask = (labels == class_id)
+                        
+                        # SELECTIVE: Only align classes present in batch
+                        if not mask.any():
                             continue
-
-                        pos_dist = sq_dists[i, y_i]
-
-                        # Confidence scaling: reduce influence of unreliable anchors
-                        conf_c = confidence_t[y_i]
-                        if conf_c < 0.1:  # Skip very low confidence anchors
+                        
+                        # SELECTIVE: Require minimum samples and valid anchor
+                        n_samples = mask.sum().item()
+                        if n_samples < 3 or not anchor_valid[class_id]:
                             continue
-
-                        # Margin-based loss: encourage separation
-                        neg_dists = []
-                        for c in range(num_classes):
-                            if c != y_i and anchor_valid[c] and client_class_counts[c] > 0:
-                                neg_dists.append(sq_dists[i, c])
-
-                        if neg_dists:
-                            neg_dist = torch.stack(neg_dists).mean()
-                            # Margin loss: want pos_dist < neg_dist
-                            margin_loss = torch.clamp(pos_dist - neg_dist + 0.5, min=0)
-                            # Scale by confidence
-                            term = conf_c * margin_loss
+                        
+                        # Extract class embeddings
+                        class_emb = embeddings_norm[mask]  # [n_samples, emb_dim]
+                        anchor = anchors_normalized[class_id]  # [emb_dim]
+                        
+                        # Squared distance to anchor
+                        sq_dist = ((class_emb - anchor) ** 2).mean()
+                        
+                        # Class frequency weighting
+                        freq = n_samples / batch_size
+                        class_weight = min(5.0, np.sqrt(1.0 / (freq + 1e-8)))
+                        
+                        # Confidence weighting with minimum thresholds
+                        conf_c = confidence[class_id].item()
+                        
+                        # Continuous confidence scaling (FIX: prevent zero CRA for low confidence)
+                        # Minority classes (freq < 0.2): only skip if conf_c < 0.05, else scale with min 0.2
+                        # Majority classes (freq >= 0.2): only skip if conf_c < 0.3, else scale with min 0.4
+                        is_minority = freq < 0.2
+                        min_conf_threshold = 0.05 if is_minority else 0.3
+                        min_scale = 0.2 if is_minority else 0.4
+                        
+                        if conf_c < min_conf_threshold:
+                            conf_weight = 0.0  # Skip entirely
                         else:
-                            # Fallback: just minimize distance to own anchor
-                            term = conf_c * pos_dist
-
-                        per_sample_cra.append(term)
-
-                    if per_sample_cra:
-                        cra_loss = torch.stack(per_sample_cra).mean()
-                        cra_loss = torch.clamp(cra_loss, 0, 2.0)  # Bound the loss
-
-                # Proximal regularization (FedProx)
-                prox_loss = torch.tensor(0.0, device=device)
-                if proximal_mu > 0:
-                    current_params = list(model.parameters())
-                    for curr_p, global_p in zip(current_params, global_params_t):
-                        prox_loss += ((curr_p - global_p) ** 2).sum()
-                    prox_loss = (proximal_mu / 2.0) * prox_loss
-
-                # Combined loss
-                loss = ce_loss + cra_loss + prox_loss
-
-                loss.backward()
+                            conf_weight = max(min_scale, conf_c)  # Scale with minimum
+                        
+                        # Accumulate weighted CRA loss
+                        cra_loss = cra_loss + (sq_dist * class_weight * conf_weight)
+                    
+                    # Apply global CRA strength
+                    cra_loss = cra_loss * cra_strength
+                
+                # ──────────────────────────────────────────────────────
+                # Loss Component 3: Class-Conditional Proximal
+                # ──────────────────────────────────────────────────────
+                proximal_loss = torch.tensor(0.0, device=device)
+                
+                # Compute effective μ for classes in this batch
+                unique_classes = torch.unique(labels)
+                if len(unique_classes) > 0:
+                    mu_effective = mu_c[unique_classes].mean()
+                    
+                    # Parameter divergence
+                    for param_name, local_param in model.named_parameters():
+                        if param_name in global_params_dict:
+                            global_param = global_params_dict[param_name]
+                            diff = local_param - global_param
+                            proximal_loss = proximal_loss + (diff ** 2).sum()
+                    
+                    proximal_loss = (mu_effective / 2.0) * proximal_loss
+                
+                # ──────────────────────────────────────────────────────
+                # Combined Loss
+                # ──────────────────────────────────────────────────────
+                total_loss = ce_loss + lambda_cra * cra_loss + proximal_loss
+                
+                # Backward pass with gradient clipping
+                total_loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
                 optimizer.step()
-
-                running_loss += loss.item()
-                steps += 1
+                
+                # Logging
+                running_loss += total_loss.item()
+                num_steps += 1
+                
                 preds = outputs.argmax(dim=1)
                 all_labels.extend(labels.cpu().numpy())
                 all_preds.extend(preds.cpu().numpy())
-
+    
     finally:
-        if hook_handle:
+        if hook_handle is not None:
             hook_handle.remove()
-
-    # Compute residuals for server aggregation
-    residuals = {}
-    if penultimate:
-        # Compute per-class residual: difference between client centroid and global anchor
-        centroids, _ = _compute_class_centroids(model, train_loader, num_classes, device)
-        for c in range(num_classes):
-            if c in centroids and anchor_valid[c]:
-                client_centroid = np.array(centroids[c])
-                global_anchor = anchors[c]
-                residual = client_centroid - global_anchor
-                residuals[c] = residual.tolist()
-
+    
+    # ══════════════════════════════════════════════════════════════════
+    # Extract Residuals for Server Aggregation
+    # ══════════════════════════════════════════════════════════════════
+    residuals = _extract_class_residuals(
+        model, train_loader, num_classes, anchors.cpu().numpy(), device
+    )
+    
+    # ══════════════════════════════════════════════════════════════════
+    # Compute Metrics
+    # ══════════════════════════════════════════════════════════════════
+    all_labels = np.array(all_labels)
+    all_preds = np.array(all_preds)
+    
+    # Confusion matrix for FPR
     cm = confusion_matrix(all_labels, all_preds, labels=list(range(num_classes)))
     FP = cm.sum(axis=0) - np.diag(cm)
     TN = cm.sum() - (FP + cm.sum(axis=1) - np.diag(cm) + np.diag(cm))
     FPR = FP / (FP + TN + 1e-10)
-
-    return {
-        "loss": running_loss / max(steps, 1),
+    
+    metrics = {
+        "loss": running_loss / max(num_steps, 1),
         "accuracy": accuracy_score(all_labels, all_preds),
-        "error_rate": 1 - accuracy_score(all_labels, all_preds),
+        "error_rate": 1.0 - accuracy_score(all_labels, all_preds),
         "precision": precision_score(all_labels, all_preds, average="macro", zero_division=0),
         "recall": recall_score(all_labels, all_preds, average="macro", zero_division=0),
         "f1_score": f1_score(all_labels, all_preds, average="macro", zero_division=0),
         "f1_weighted": f1_score(all_labels, all_preds, average="weighted", zero_division=0),
         "macro_fpr": float(np.mean(FPR)),
         "cra_residuals": json.dumps(residuals),
-        "cra_class_counts": json.dumps({int(k): int(v) for k, v in enumerate(client_class_counts)}),
+        "cra_class_counts": json.dumps(
+            {int(k): int(v) for k, v in enumerate(client_class_counts)}
+        ),
     }
+    
+    return metrics
 
 
-def _compute_class_centroids(model, loader, num_classes: int, device):
+def _extract_class_residuals(
+    model: nn.Module,
+    loader,
+    num_classes: int,
+    anchors: np.ndarray,
+    device: torch.device,
+) -> Dict[int, list]:
     """
-    Compute per-class centroids from penultimate layer activations.
-    Centroids are L2-normalised to match the normalisation applied during
-    training, so server-side anchors stay in the same embedding space.
-
-    The loader is iterated without re-shuffling so results are deterministic
-    regardless of the DataLoader's internal state.
+    Extract per-class mean embeddings (residuals) for server aggregation.
+    
+    Returns dict mapping class_id → mean embedding vector (as list).
     """
     model.eval()
-    sums, counts = {}, {}
-    penultimate  = []
-    hook_handle  = None
-
+    
+    # Setup hook for penultimate layer
+    penultimate = []
+    hook_handle = None
+    
     if hasattr(model, "fc_layers") and len(model.fc_layers) >= 2:
         hook_handle = model.fc_layers[-2].register_forward_hook(
             lambda m, i, o: penultimate.append(o.detach())
         )
     else:
-        return {}, {}
-
+        return {}
+    
+    # Accumulate embeddings per class
+    class_embeddings_sum = {}
+    class_counts = {}
+    
     try:
         with torch.no_grad():
-            for xb, yb in loader:
-                xb    = xb.to(device, non_blocking=True)
-                yb_np = yb.numpy()
+            for inputs, labels in loader:
+                inputs = inputs.to(device, non_blocking=True)
+                labels_np = labels.numpy()
+                
                 penultimate.clear()
-                _     = model(xb)
+                _ = model(inputs)
+                
                 if not penultimate:
                     continue
-                acts  = penultimate[0].cpu().numpy()
-
-                # L2-normalise before accumulating centroid (matches training)
-                norms = np.linalg.norm(acts, axis=1, keepdims=True)
+                
+                embeddings = penultimate[0].cpu().numpy()  # [batch_size, emb_dim]
+                
+                # L2-normalize embeddings
+                norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
                 norms = np.where(norms < 1e-8, 1.0, norms)
-                acts  = acts / norms
-
-                for k in range(num_classes):
-                    mask = (yb_np == k)
+                embeddings = embeddings / norms
+                
+                # Accumulate per class
+                for class_id in range(num_classes):
+                    mask = (labels_np == class_id)
                     if mask.sum() == 0:
                         continue
-                    k_acts = acts[mask]
-                    if k not in sums:
-                        sums[k]   = np.zeros(k_acts.shape[1], dtype=np.float32)
-                        counts[k] = 0
-                    sums[k]   += k_acts.sum(axis=0)
-                    counts[k] += int(mask.sum())
+                    
+                    class_emb = embeddings[mask]
+                    
+                    if class_id not in class_embeddings_sum:
+                        class_embeddings_sum[class_id] = np.zeros(
+                            class_emb.shape[1], dtype=np.float32
+                        )
+                        class_counts[class_id] = 0
+                    
+                    class_embeddings_sum[class_id] += class_emb.sum(axis=0)
+                    class_counts[class_id] += int(mask.sum())
+    
     finally:
-        if hook_handle:
+        if hook_handle is not None:
             hook_handle.remove()
-
-    return {k: (sums[k] / counts[k]).tolist() for k in sums}, counts
-
-
-class ClientModel(fl.client.NumPyClient):
-    def __init__(self, client_id, model, train_loader, test_loader,
-                 client_names, results_path=None):
-        super().__init__()
-        self.client_id    = client_id
-        self.train_loader = train_loader
-        self.test_loader  = test_loader
-        self.model        = model
-        self.client_names = client_names
-        self.device       = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.results_path = results_path
-        self.round_id     = 0
-        self.client_name  = (client_names[int(client_id)]
-                             if 0 <= int(client_id) < len(client_names)
-                             else "client")
-        self.model_name   = model.__class__.__name__
-        print("DEVICE:", next(self.model.parameters()).device)
-
-    def set_parameters(self, parameters):
-        state_dict = OrderedDict(
-            {k: torch.Tensor(v).to(self.device)
-             for k, v in zip(self.model.state_dict().keys(), parameters)})
-        self.model.load_state_dict(state_dict, strict=True)
-
-    def get_parameters(self, config: dict):
-        return [val.cpu().numpy() for _, val in self.model.state_dict().items()]
-
-    def fit(self, parameters, config):
-        self.set_parameters(parameters)
-        lr            = float(config.get("learning_rate", 0.001))
-        self.round_id = config.get("round_id", 0)
-        optimizer     = getattr(optim, config.get("optimizer", "Adam"))(
-                            self.model.parameters(), lr=lr)
-        epochs        = config.get("epochs", 5)
-
-        # Gradient clipping is applied in BOTH FedCRA and FedAvg paths so
-        # that the two strategies operate under identical optimisation conditions.
-        grad_clip = float(config.get("cra_grad_clip", 1.0))
-
-        cra_anchors_json = config.get("cra_anchors")
-        cra_confidence_json = config.get("cra_confidence")
-        proximal_mu = float(config.get("cra_proximal_mu", 0.01))
-        num_classes = int(config.get("cra_num_classes",
-                           getattr(self.model, "output_size", 9)))
-        is_cra = bool(cra_anchors_json and cra_confidence_json)
-
-        print(f"[Client {self.client_name:10s}] Round {self.round_id:3d} | "
-              f"lr={lr:.5f} | proximal_mu={proximal_mu:.4f} | "
-              f"grad_clip={grad_clip:.1f} | "
-              f"{'CRA' if is_cra else 'FedAvg':4s}")
-
-        self.model.to(self.device)
-        t0 = time.time()
-
-        if is_cra:
-            anchors = np.array(json.loads(cra_anchors_json), dtype=np.float32)
-            confidence = np.array(json.loads(cra_confidence_json), dtype=np.float32)
-            global_params = parameters  # Use the received global parameters for proximal
-            metrics = _fed_train_cra(
-                model=self.model, epochs=epochs, optimizer=optimizer,
-                train_loader=self.train_loader,
-                anchors=anchors, confidence=confidence, proximal_mu=proximal_mu,
-                global_params=global_params, num_classes=num_classes,
-                grad_clip=grad_clip)
-        else:
-            # FedAvg path — identical hyper-parameters except no CRA loss.
-            # grad_clip is now applied here too for a fair comparison.
-            metrics = fed_train(
-                model=self.model, epochs=epochs, optimizer=optimizer,
-                train_loader=self.train_loader, grad_clip=grad_clip)
-
-        self.write_results_json(metrics, time.time() - t0, "train", self.round_id)
-        # Only save model checkpoints if explicitly enabled (to save disk space during experiments)
-        if os.getenv('SAVE_CLIENT_CHECKPOINTS', 'false').lower() == 'true':
-            self.save_model(self.model, self.round_id)
-
-        fit_metrics = {}
-        # Return residuals and class counts for server aggregation
-        if is_cra:
-            # Metrics already include cra_residuals and cra_class_counts
-            fit_metrics.update({
-                "cra_residuals": metrics.get("cra_residuals", "{}"),
-                "cra_class_counts": metrics.get("cra_class_counts", "{}"),
-            })
-
-        return self.get_parameters({}), len(self.train_loader), fit_metrics
-
-    def evaluate(self, parameters: NDArrays, config: dict):
-        self.set_parameters(parameters)
-        print(f"Client {self.client_name} evaluating round {self.round_id}")
-        self.model.to(self.device)
-        t0 = time.time()
-        metrics = fed_test(self.model, self.test_loader)
-        self.write_results_json(metrics, time.time() - t0, "test", self.round_id)
-        return float(metrics["loss"]), len(self.test_loader), {"accuracy": metrics["accuracy"]}
-
-    def write_results_json(self, metrics, dt, phase, round_id):
-        d = Path(self.results_path) / "clients"
-        d.mkdir(parents=True, exist_ok=True)
-        f = d / f"{self.client_name}.json"
-        data = json.loads(f.read_text()) if f.exists() else []
-        data.append({"round": round_id, f"{phase}_metrics": metrics, "communication_time": dt})
-        f.write_text(json.dumps(data, indent=4))
-
-    def save_model(self, model, round_id):
-        d = Path(self.results_path) / "clients"
-        d.mkdir(parents=True, exist_ok=True)
-        torch.save(model.state_dict(), d / f"{self.client_name}_rnd_{round_id}.pth")
-
-
-def generate_client_fn(model_fn, train_loaders, test_loaders, client_names, results_path):
-    def client_fn(client_id):
-        try:
-            return ClientModel(
-                client_id=client_id, model=model_fn(),
-                train_loader=train_loaders[int(client_id)],
-                test_loader=test_loaders[int(client_id)],
-                client_names=client_names,
-                results_path=results_path,
-            )
-        except Exception as e:
-            logger.error(f"Error in client {client_id}: {e}")
-            raise
-    return client_fn
+    
+    # Compute mean embeddings (residuals)
+    residuals = {}
+    for class_id in class_embeddings_sum:
+        if class_counts[class_id] > 0:
+            mean_embedding = class_embeddings_sum[class_id] / class_counts[class_id]
+            residuals[class_id] = mean_embedding.tolist()
+    
+    return residuals

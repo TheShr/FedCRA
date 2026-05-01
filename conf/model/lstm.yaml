@@ -1,6 +1,6 @@
 ---
 _target_: src.deepLearn.model.LSTMModel
 input_size: 45
-output_size: 5
+output_size: 4
 hidden_layers: 5
 hidden_units: 128

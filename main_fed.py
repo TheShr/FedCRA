@@ -4,7 +4,7 @@ from omegaconf import DictConfig, OmegaConf
 from hydra.utils import instantiate
 import flwr as fl
 from src.fedLearn.server.server_side import get_on_fit_config
-from src.fedLearn.clients.nn_client import generate_client_fn
+from src.fedLearn.client import generate_client_fn
 from src.fedLearn.server.server_side import get_evaluate_server_fn
 import warnings
 import pickle
@@ -16,9 +16,13 @@ from sklearn.metrics import confusion_matrix
 import json
 from collections import OrderedDict
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-from src.fedLearn.fed_data import federated_data
+from src.fedLearn.fed_data import federated_data_dirichlet
 from log_config import base_logger
 from flwr.common.parameter import ndarrays_to_parameters
+from src.fedLearn.strategies.custom_strategies import (
+    FedBB, FedFocal, FedLC, FedLTA, FedSCaffold, FLAME,
+)
+from src.fedLearn.strategies.fedcra_strategy import FedCRA
 
 import warnings, re
 warnings.filterwarnings(
@@ -169,16 +173,22 @@ def get_evaluate_server_fn(model, test_loader, results_path):
 @hydra.main(config_path="conf", config_name="config", version_base=None)
 def main(cfg: DictConfig) -> None:
     os.environ['HYDRA_FULL_ERROR'] = '1'  # Ensure full error reporting
+    OmegaConf.set_struct(cfg, False)
+    cfg.config_fit.cra_grad_clip = cfg.get("cra_grad_clip", cfg.config_fit.get("cra_grad_clip", 1.0))
 
     print(OmegaConf.to_yaml(cfg))
 
-    client_train_loaders, client_val_loaders, serv_train_loader, ser_test_loader = federated_data(
+    client_train_loaders, client_val_loaders, serv_train_loader, ser_test_loader, num_classes, class_names = federated_data_dirichlet(
         data_folder=cfg.data_config.folder_name,
         data_file=cfg.data_config.file_name,
         label_name=cfg.data_config.label_name,
         n_features=cfg.data_config.n_features,
         num_clients=cfg.fed_config.num_clients,
-        train_batch_size=512
+        train_batch_size=512,
+        alpha=cfg.data_config.alpha,
+        total_samples=cfg.data_config.total_samples,
+        class_ratios=cfg.imbalance.class_ratios,
+        seed=cfg.seed,
     )
 
     device = torch.device("cpu")  # Force CPU usage
@@ -207,60 +217,93 @@ def main(cfg: DictConfig) -> None:
     )
 
     strategy_name = cfg.fed_config.fed_strategy
-    # Map string to strategy class
+    strategy_key = strategy_name.lower()
+    # Map strategy keys to a base strategy class.
     strategy_map = {
-        "fedAdagrad": fl.server.strategy.FedAdagrad,
-        "fedAdam": fl.server.strategy.FedAdam,
-        "fedAvg": fl.server.strategy.FedAvg,
-        "fedAvgM": fl.server.strategy.FedAvgM,
-        "fedMedian": fl.server.strategy.FedMedian,
-        "fedOpt": fl.server.strategy.FedOpt,
-        "fedYogi": fl.server.strategy.FedYogi,
-        "fedKrum": fl.server.strategy.Krum,
-        "fedTrimmedMean": fl.server.strategy.FedTrimmedAvg
-
+        "fedadagrad": fl.server.strategy.FedAdagrad,
+        "fedadam": fl.server.strategy.FedAdam,
+        "fedavg": fl.server.strategy.FedAvg,
+        "fedavgm": fl.server.strategy.FedAvgM,
+        "fedmedian": fl.server.strategy.FedMedian,
+        "fedopt": fl.server.strategy.FedOpt,
+        "fedyogi": fl.server.strategy.FedYogi,
+        "fedkrum": fl.server.strategy.Krum,
+        "fedtrimmedmean": fl.server.strategy.FedTrimmedAvg,
+        "fedscaffold": FedSCaffold,
+        "fedlc": FedLC,
+        "fedfocal": FedFocal,
+        "fedbb": FedBB,
+        "fedlta": FedLTA,
+        "flame": FLAME,
+        "fedcra": FedCRA,
     }
 
-    base_strategy = strategy_map.get(strategy_name, fl.server.strategy.FedAvg)
+    base_strategy = strategy_map.get(strategy_key, fl.server.strategy.FedAvg)
+
+    # Special handling for FedCRA which needs config
+    if strategy_key == "fedcra":
+        strategy_instance = base_strategy(cfg)
+    else:
+        strategy_instance = None
 
 
+    if strategy_instance is not None:
+        # For FedCRA, use the instance directly with model saving mixin
+        class SaveModelStrategy(type(strategy_instance)):
+            def __init__(self):
+                # Copy the FedCRA instance
+                self.__dict__.update(strategy_instance.__dict__)
 
-    class SaveModelStrategy(base_strategy):
-        def aggregate_fit(self, server_round: int, results, failures):
-            aggregated_parameters, aggregated_metrics = super().aggregate_fit(server_round, results, failures)
+            def aggregate_fit(self, server_round: int, results, failures):
+                aggregated_parameters, aggregated_metrics = super().aggregate_fit(server_round, results, failures)
 
-            if aggregated_parameters is not None:
-                logger.info(f"Saving round {server_round} aggregated parameters...")
+                if aggregated_parameters is not None:
+                    logger.info(f"Saving round {server_round} aggregated parameters...")
 
-                aggregated_ndarrays = fl.common.parameters_to_ndarrays(aggregated_parameters)
-                params_dict = zip(model.state_dict().keys(), aggregated_ndarrays)
-                state_dict = OrderedDict(
-                    {k: torch.tensor(v) for k, v in params_dict}
-                )
-                model.load_state_dict(state_dict, strict=True)
-                model_save_path = f"{server_model_dir}/sm_{server_round}.pth"
-                torch.save(model.state_dict(), model_save_path)
-                logger.info(f"Server model saved at: {model_save_path}")
+                    aggregated_ndarrays = fl.common.parameters_to_ndarrays(aggregated_parameters)
+                    params_dict = zip(model.state_dict().keys(), aggregated_ndarrays)
+                    state_dict = OrderedDict(
+                        {k: torch.tensor(v) for k, v in params_dict}
+                    )
+                    model.load_state_dict(state_dict, strict=True)
+                    model_save_path = f"{server_model_dir}/sm_{server_round}.pth"
+                    torch.save(model.state_dict(), model_save_path)
+                    logger.info(f"Server model saved at: {model_save_path}")
 
-            return aggregated_parameters, aggregated_metrics
+                return aggregated_parameters, aggregated_metrics
 
-    # strategy name
-    metrics_path = f"{save_path}/{model_name}"
-    strategy = SaveModelStrategy(
-        fraction_fit=0.1,
-        min_fit_clients=cfg.fed_config.num_clients_per_round_fit,
-        fraction_evaluate=0.1,
-        min_evaluate_clients=cfg.fed_config.num_clients_per_round_eval,
-        min_available_clients=cfg.fed_config.num_clients,
-        on_fit_config_fn=get_on_fit_config(cfg.config_fit),
-        evaluate_fn=get_evaluate_server_fn(model=model, test_loader=ser_test_loader, results_path=metrics_path),
-        initial_parameters=model_to_parameters(model)
-    )
+        strategy = SaveModelStrategy()
+    else:
+        # Standard strategy instantiation
+        class SaveModelStrategy(base_strategy):
+            def aggregate_fit(self, server_round: int, results, failures):
+                aggregated_parameters, aggregated_metrics = super().aggregate_fit(server_round, results, failures)
 
-    client_resources = {
-        "num_cpus": cfg.fed_config.num_cpus,
-        "num_gpus": 0,  # Force CPU usage
-    }
+                if aggregated_parameters is not None:
+                    logger.info(f"Saving round {server_round} aggregated parameters...")
+
+                    aggregated_ndarrays = fl.common.parameters_to_ndarrays(aggregated_parameters)
+                    params_dict = zip(model.state_dict().keys(), aggregated_ndarrays)
+                    state_dict = OrderedDict(
+                        {k: torch.tensor(v) for k, v in params_dict}
+                    )
+                    model.load_state_dict(state_dict, strict=True)
+                    model_save_path = f"{server_model_dir}/sm_{server_round}.pth"
+                    torch.save(model.state_dict(), model_save_path)
+                    logger.info(f"Server model saved at: {model_save_path}")
+
+                return aggregated_parameters, aggregated_metrics
+
+        strategy = SaveModelStrategy(
+            fraction_fit=0.1,
+            min_fit_clients=cfg.fed_config.num_clients_per_round_fit,
+            fraction_evaluate=0.1,
+            min_evaluate_clients=cfg.fed_config.num_clients_per_round_eval,
+            min_available_clients=cfg.fed_config.num_clients,
+            on_fit_config_fn=get_on_fit_config(cfg.config_fit),
+            evaluate_fn=get_evaluate_server_fn(model=model, test_loader=ser_test_loader, results_path=metrics_path),
+            initial_parameters=model_to_parameters(model)
+        )
 
     history = fl.simulation.start_simulation(
         client_fn=client_fn,

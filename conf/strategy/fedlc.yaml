@@ -1,0 +1,3 @@
+name: FedLC
+params:
+  fedlc_mu: 0.005

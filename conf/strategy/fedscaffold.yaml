@@ -1,0 +1,3 @@
+name: FedSCaffold
+params:
+  control_variate_lr: 1.0

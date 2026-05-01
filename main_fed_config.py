@@ -19,7 +19,7 @@ import flwr as fl
 from flwr.common.parameter import ndarrays_to_parameters
 
 from src.fedLearn.server.server_side import get_on_fit_config
-from src.fedLearn.clients.nn_client import generate_client_fn
+from src.fedLearn.client import generate_client_fn
 from src.fedLearn.fed_data import federated_data_dirichlet
 from log_config import base_logger
 
@@ -51,7 +51,7 @@ def model_to_parameters(model):
         [val.cpu().numpy() for _, val in model.state_dict().items()])
 
 
-def evaluate_server_model(model, test_loader):
+def evaluate_server_model(model, test_loader, class_names=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     model.eval()
@@ -62,22 +62,43 @@ def evaluate_server_model(model, test_loader):
         for xb, yb in test_loader:
             xb, yb = xb.to(device), yb.to(device)
             logits = model(xb)
-            total_loss += crit(logits, yb).item()
+            total_loss += crit(logits, yb).item() * yb.size(0)
             pred = logits.argmax(1)
             total += yb.size(0)
             all_y.extend(yb.cpu().numpy())
             all_p.extend(pred.cpu().numpy())
+
     from src.fedLearn.centralized import compute_macro_fpr, compute_per_class_f1
-    return {
-        "loss":         total_loss / max(total, 1),
-        "accuracy":     accuracy_score(all_y, all_p),
-        "precision":    precision_score(all_y, all_p, average="macro", zero_division=0),
-        "recall":       recall_score(all_y, all_p, average="macro", zero_division=0),
-        "f1_score":     f1_score(all_y, all_p, average="macro", zero_division=0),
-        "f1_weighted":  f1_score(all_y, all_p, average="weighted", zero_division=0),
-        "macro_fpr":    compute_macro_fpr(all_y, all_p),
-        "per_class_f1": compute_per_class_f1(all_y, all_p),
+    acc = accuracy_score(all_y, all_p)
+    precision_macro = precision_score(all_y, all_p, average="macro", zero_division=0)
+    recall_macro = recall_score(all_y, all_p, average="macro", zero_division=0)
+    f1_macro = f1_score(all_y, all_p, average="macro", zero_division=0)
+    f1_weighted = f1_score(all_y, all_p, average="weighted", zero_division=0)
+    labels = np.arange(len(class_names)) if class_names is not None else None
+    precision_per_class = precision_score(all_y, all_p, average=None, labels=labels, zero_division=0)
+    recall_per_class = recall_score(all_y, all_p, average=None, labels=labels, zero_division=0)
+    f1_per_class = f1_score(all_y, all_p, average=None, labels=labels, zero_division=0)
+
+    metrics = {
+        "loss": total_loss / max(total, 1),
+        "accuracy": acc,
+        "error_rate": 1.0 - acc,
+        "precision": precision_macro,
+        "recall": recall_macro,
+        "f1_score": f1_macro,
+        "f1_weighted": f1_weighted,
+        "macro_fpr": compute_macro_fpr(all_y, all_p),
+        "per_class_f1": compute_per_class_f1(all_y, all_p, num_classes=len(class_names) if class_names is not None else None),
     }
+
+    class_names = list(class_names) if class_names is not None else [f"class_{i}" for i in range(len(f1_per_class))]
+    for idx, cls in enumerate(class_names):
+        label_key = str(cls).replace(' ', '_').lower()
+        metrics[f"{label_key}_precision"] = float(precision_per_class[idx])
+        metrics[f"{label_key}_recall"] = float(recall_per_class[idx])
+        metrics[f"{label_key}_f1"] = float(f1_per_class[idx])
+
+    return metrics
 
 
 def save_server_metrics_json(metrics, server_round, server_metrics_dir, dt):
@@ -92,7 +113,7 @@ def save_server_metrics_json(metrics, server_round, server_metrics_dir, dt):
     f.write_text(json.dumps(data, indent=4))
 
 
-def get_evaluate_server_fn(model, test_loader, server_metrics_dir):
+def get_evaluate_server_fn(model, test_loader, server_metrics_dir, class_names=None):
     def evaluate_fn(server_round, parameters, config):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model.to(device)
@@ -101,7 +122,7 @@ def get_evaluate_server_fn(model, test_loader, server_metrics_dir):
              zip(model.state_dict().keys(), parameters)})
         model.load_state_dict(state_dict, strict=True)
         t0 = time.time()
-        metrics = evaluate_server_model(model, test_loader)
+        metrics = evaluate_server_model(model, test_loader, class_names=class_names)
         save_server_metrics_json(metrics, server_round, server_metrics_dir,
                                  time.time() - t0)
         return metrics["loss"], {"accuracy": metrics["accuracy"]}
@@ -110,6 +131,16 @@ def get_evaluate_server_fn(model, test_loader, server_metrics_dir):
 
 def _make_save_fn(model, server_model_dir):
     def _save(server_round, aggregated_parameters):
+        # Check available disk space before saving
+        try:
+            stat = os.statvfs(server_model_dir)
+            available_gb = (stat.f_bavail * stat.f_frsize) / (1024**3)
+            if available_gb < 1.0:  # Less than 1GB available
+                logger.warning(f"Low disk space ({available_gb:.3f}GB available). Skipping model save at round {server_round}.")
+                return
+        except Exception as e:
+            logger.warning(f"Could not check disk space: {e}. Proceeding with save.")
+
         ndarrays = fl.common.parameters_to_ndarrays(aggregated_parameters)
         state_dict = OrderedDict(
             {k: torch.tensor(v) for k, v in
@@ -189,6 +220,62 @@ def build_strategy(cfg: DictConfig, model, evaluate_fn, server_model_dir: str, s
             **common,
         )
 
+    # ── Custom strategy implementations for requested comparison strategies ──
+    custom_strategy_map = {
+        "FedScaffold": "FedSCaffold",
+        "FedSCaffold": "FedSCaffold",
+        "FedLC": "FedLC",
+        "FedFocal": "FedFocal",
+        "FedBB": "FedBB",
+        "FedLTA": "FedLTA",
+        "FLAME": "FLAME",
+    }
+
+    if strategy_name in custom_strategy_map:
+        from src.fedLearn.strategies.custom_strategies import (
+            FedBB, FedFocal, FedLC, FedLTA, FedSCaffold, FLAME,
+        )
+        canonical_name = custom_strategy_map[strategy_name]
+        strategy_cls = {
+            "FedSCaffold": FedSCaffold,
+            "FedLC": FedLC,
+            "FedFocal": FedFocal,
+            "FedBB": FedBB,
+            "FedLTA": FedLTA,
+            "FLAME": FLAME,
+        }[canonical_name]
+        return strategy_cls(
+            cfg,
+            server_metrics_dir=str(server_metrics_dir),
+            server_save=save_fn,
+            **common,
+            **extra_params,
+        )
+
+    # ── All other strategies: inject _CuberootMixin + _SaveMixin ──────────
+    class _SaveMixin:
+        def __init__(self, *a, _save_fn=None, **kw):
+            self.__save_fn = _save_fn
+            super().__init__(*a, **kw)
+
+        def aggregate_fit(self, server_round, results, failures):
+            agg_params, agg_metrics = super().aggregate_fit(
+                server_round, results, failures)
+            if agg_params is not None and self.__save_fn:
+                try:
+                    self.__save_fn(server_round, agg_params)
+                except Exception as e:
+                    logger.warning(f"Failed to save model checkpoint at round {server_round}: {e}")
+            return agg_params, agg_metrics
+
+    strategy_cls = getattr(fl.server.strategy, strategy_name, None)
+    if strategy_cls is None:
+        avail = [n for n in dir(fl.server.strategy) if n.startswith("Fed")]
+        raise ValueError(f"Unknown strategy '{strategy_name}'. Available: {avail}")
+
+    Mixed = type("_Strategy", (_SaveMixin, _CuberootMixin, strategy_cls), {})
+    return Mixed(**common, _save_fn=save_fn)
+
     # ── All other strategies: inject _CuberootMixin + _SaveMixin ──────────
     class _SaveMixin:
         def __init__(self, *a, _save_fn=None, **kw):
@@ -207,17 +294,15 @@ def build_strategy(cfg: DictConfig, model, evaluate_fn, server_model_dir: str, s
         avail = [n for n in dir(fl.server.strategy) if n.startswith("Fed")]
         raise ValueError(f"Unknown strategy '{strategy_name}'. Available: {avail}")
 
-    # MRO: _SaveMixin → _CuberootMixin → strategy_cls (e.g. FedAvg)
-    # _SaveMixin.aggregate_fit calls super() → _CuberootMixin.aggregate_fit
-    # _CuberootMixin replaces weights, then calls super() → strategy_cls.aggregate_fit
     Mixed = type("_Strategy", (_SaveMixin, _CuberootMixin, strategy_cls), {})
-    return Mixed(**common, **extra_params, _save_fn=save_fn)
+    return Mixed(**common, _save_fn=save_fn)
 
 
 @hydra.main(config_path="conf", config_name="config", version_base=None)
 def main(cfg: DictConfig) -> None:
     os.environ["HYDRA_FULL_ERROR"] = "1"
     OmegaConf.set_struct(cfg, False)
+    cfg.config_fit.cra_grad_clip = cfg.get("cra_grad_clip", cfg.config_fit.get("cra_grad_clip", 1.0))
     print(OmegaConf.to_yaml(cfg))
 
     seed = int(cfg.get("seed", 42))
@@ -230,17 +315,25 @@ def main(cfg: DictConfig) -> None:
     logger.info(f"Results base  = {results_base}")
 
     (client_train_loaders, client_val_loaders,
-     serv_train_loader, ser_test_loader) = federated_data_dirichlet(
+     serv_train_loader, ser_test_loader,
+     detected_num_classes, class_names) = federated_data_dirichlet(
         data_folder=data_folder,
         data_file=cfg.data_config.file_name,
         label_name=cfg.data_config.label_name,
         n_features=cfg.data_config.n_features,
         num_clients=cfg.fed_config.num_clients,
         train_batch_size=cfg.fed_config.train_batch_size,
-        alpha=cfg.data_config.alpha,
-        sample_size=cfg.data_config.sample_size,
+        alpha=cfg.dirichlet.alpha,
+        total_samples=cfg.data_config.total_samples,
+        class_ratios=cfg.imbalance.class_ratios,
         seed=seed,
     )
+
+    cfg.dataset.num_classes = detected_num_classes
+    if cfg.strategy.name == "FedCRA":
+        if "params" not in cfg.strategy or cfg.strategy.params is None:
+            cfg.strategy.params = {}
+        cfg.strategy.params.num_classes = detected_num_classes
 
     model = instantiate(cfg.model).to(device)
     model_name = model.__class__.__name__
@@ -257,7 +350,7 @@ def main(cfg: DictConfig) -> None:
 
     client_names = [f"c{i+1}" for i in range(cfg.fed_config.num_clients)]
     client_fn = generate_client_fn(
-        model_fn=lambda: instantiate(cfg.model),
+        model=model,
         train_loaders=client_train_loaders,
         test_loaders=client_val_loaders,
         client_names=client_names,
@@ -271,6 +364,7 @@ def main(cfg: DictConfig) -> None:
             model=model,
             test_loader=ser_test_loader,
             server_metrics_dir=str(server_metrics_dir),
+            class_names=class_names,
         ),
         server_model_dir=str(server_model_dir),
         server_metrics_dir=str(server_metrics_dir),

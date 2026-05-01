@@ -1,8 +1,10 @@
 defaults:
   - _self_
   - model: dnn.yaml
-  - strategy: fedavg.yaml
-  - config_fit: lstm_config_fit.yaml
+  - strategy: fedcra.yaml
+  - config_fit: fedcra_config_fit.yaml
+  - imbalance: balanced
+  - dirichlet: alpha_1_0
 
 PROJECT_PATH: '/workspace/fed_iomt/dataset'
 
@@ -12,39 +14,78 @@ hydra:
 
 dataset:
   dataset_name: 'iomt_traffic'
-  data_file_name: 'iomt_traffic_ip_flow.csv.bz2' # cic_iomt.csv.bz2, iomt_traffic_ip_flow.csv.bz2, cic_ids_2017.csv.bz2
+  # Switch between datasets by changing these 3 lines only:
+  #   CIC-IoMT 2024:         cic_iomt.csv.bz2         | n_features: 45 | num_classes: 6
+  #   CIC-Traffic-IPFlow:    iomt_traffic_ip_flow.csv.bz2 | n_features: 30 | num_classes: 9
+  #   CIC-IDS-2017:          cic_ids_2017.csv.bz2     | n_features: 78 | num_classes: 6
+  data_file_name: 'cic_iomt.csv.bz2'
   label_name: 'Category'
-  n_features: 30   # 78 for cic_ids_2017.csv.bz2, 30 iomt_traffic_ip_flow.csv.bz2, 45 for cic_iomt.csv.bz2
-  num_classes: 9   # 6 for cic_ids_2017.csv.bz2, 9 for iomt_traffic_ip_flow.csv.bz2, 4 for cic_iomt.csv.bz2 
+  n_features: 45
+  num_classes: 6
+  total_samples: 100000
 
 data_config:
   folder_name: '${PROJECT_PATH}/data/${dataset.dataset_name}'
   file_name: '${PROJECT_PATH}/data/${dataset.dataset_name}/${dataset.data_file_name}'
   label_name: ${dataset.label_name}
-  sample_size: 20000
+  sample_size: ${dataset.total_samples}
+  total_samples: ${dataset.total_samples}
+  split_strategy: dirichlet
   n_features: ${dataset.n_features}
   label_encoding_type: 'label_encoding'
-  alpha: 0.3
+  class_ratios: ${imbalance.class_ratios}
+  alpha: ${dirichlet.alpha}
 
-strategy_name: 'FedAvg'
+# ── FedCRA-specific ────────────────────────────────────────────────────────
+# Applied in fed_train() via clip_grad_norm_
+cra_grad_clip: 1.0
+
+strategy_name: 'FedCRA'
 
 fed_config:
-  clients: ['client1', 'client2', 'client3', 'client4', 'client5', 'client6', 'client7', 'client8', 'client9', 'client10']
+  clients: ['client1', 'client2', 'client3', 'client4', 'client5',
+            'client6', 'client7', 'client8', 'client9', 'client10']
   server_address: "127.0.0.1:8085"
   client_name: ''
   num_rounds: 100
   num_clients: 10
   fed_strategy: ${strategy_name}
-  num_clients_per_round_fit: 10
-  num_clients_per_round_eval: 10
-  fraction_fit: 1
-  fraction_eval: 1
+
+  # Participation: 50% per round → realistic + matches literature
+  num_clients_per_round_fit: 5
+  num_clients_per_round_eval: 5
+  fraction_fit: 0.5
+  fraction_eval: 0.5
+
   num_cpus: 8
   num_gpus: 1
   train_batch_size: 512
-  num_client_local_rounds: 10
-  epochs: 5
-  learning_rate: 0.004
+
+  # FIX: local_rounds × epochs must stay ≤ 5 to prevent client drift.
+  # Old config had 10 × 5 = 50 effective steps → oscillation + F1=0.000.
+  # Now: 1 × 5 = 5 effective local gradient steps per round.
+  num_client_local_rounds: 1   # was: 10
+  epochs: 5                    # unchanged
+  # FIX: LR halved because effective steps dropped from 50 → 5.
+  learning_rate: 0.001         # was: 0.004
+
   model_results_path: '${PROJECT_PATH}/models/${dataset.dataset_name}/${dataset.label_name}'
 
 seed: 42
+
+# ── Publication experiment matrix ─────────────────────────────────────────
+# Run each dataset × each alpha. Minimum for acceptance at IEEE TIFS/IoT-J:
+#
+#   Datasets  : cic_iomt, iomt_traffic_ip_flow, cic_ids_2017
+#   Alphas    : 0.1, 0.3, 0.5, 1.0
+#   Clients   : 10 (main), 20 (scalability ablation)
+#   Baselines : FedAvg, FedProx, SCAFFOLD, FLAME, FedCRA
+#   Seeds     : 42, 123, 456  (3 runs, report mean ± std)
+#   Metrics   : Macro-F1 (primary), Weighted-F1, Accuracy, per-class F1
+#               Rounds-to-convergence (95% of final F1)
+#
+# Ablations (mandatory for reviewers):
+#   FedCRA - anchor alignment   (use_anchor_alignment: false)
+#   FedCRA - per-class mu_c     (use_class_penalty: false)
+#   FedCRA - reliability weight (uniform aggregation fallback)
+#   FedCRA - entropy selection  (gamma=1 for all clients)

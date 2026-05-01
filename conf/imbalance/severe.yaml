@@ -1,0 +1,7 @@
+class_ratios:
+  Normal: 50
+  DoS: 25
+  DDoS: 15
+  Mirai: 7
+  ARP: 2
+  Recon: 1

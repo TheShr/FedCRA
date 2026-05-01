@@ -1,5 +1,11 @@
 name: FedCRA
 params:
-  proximal_mu: 0.01
+  proximal_mu: 0.02
+  lambda_cra: 0.18
+  lambda_cra_initial: 0.08
+  lambda_cra_medium: 0.14
+  lambda_cra_base: 0.28
   embedding_dim: 128
   num_classes: ${dataset.num_classes}
+  use_class_penalty: true
+  use_anchor_alignment: true
